@@ -4,6 +4,7 @@ import re
 from typing import Dict, List, Optional
 
 import nltk
+import numpy as np
 from nltk.tokenize import word_tokenize
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from sentence_transformers import SentenceTransformer
@@ -33,82 +34,120 @@ def _normalize_tokens(text: str) -> List[str]:
     return [token for token in tokens if re.match(r"\w+", token)]
 
 
-def evaluate_bleu(generated_questions: List[Dict], ground_truth_questions: List[Dict]) -> Dict[str, float]:
-    if not generated_questions or not ground_truth_questions:
+def _match_questions_by_similarity(
+    generated: List[Dict],
+    ground_truth: List[Dict],
+    embedding_model: SentenceTransformer,
+) -> List[tuple]:
+    """
+    Жадное сопоставление: для каждого сгенерированного вопроса выбираем
+    самый похожий эталонный, который ещё не был использован.
+    Возвращает список пар (gen_idx, truth_idx).
+    """
+    if not generated or not ground_truth:
+        return []
+
+    # Эмбеддинги вопросов
+    gen_texts = [item.get("question", "") for item in generated]
+    truth_texts = [item.get("question", "") for item in ground_truth]
+    gen_emb = embedding_model.encode(gen_texts)
+    truth_emb = embedding_model.encode(truth_texts)
+
+    sim_matrix = cosine_similarity(gen_emb, truth_emb)
+
+    used_truth = set()
+    pairs = []
+
+    # Жадное присваивание: для каждого generated берём лучший ещё не использованный truth
+    for gen_idx in range(len(generated)):
+        best_sim = -1
+        best_truth_idx = -1
+        for truth_idx in range(len(ground_truth)):
+            if truth_idx in used_truth:
+                continue
+            sim = sim_matrix[gen_idx, truth_idx]
+            if sim > best_sim:
+                best_sim = sim
+                best_truth_idx = truth_idx
+        if best_truth_idx != -1:
+            pairs.append((gen_idx, best_truth_idx))
+            used_truth.add(best_truth_idx)
+    return pairs
+
+
+def evaluate_bleu_matched(
+    generated: List[Dict],
+    ground_truth: List[Dict],
+    pairs: List[tuple],
+) -> Dict[str, float]:
+    """Вычисляет BLEU только для сопоставленных пар."""
+    if not pairs:
         return {"bleu_1": 0.0, "bleu_2": 0.0, "bleu_3": 0.0, "bleu_4": 0.0}
 
     smoother = SmoothingFunction().method1
-    total = min(len(generated_questions), len(ground_truth_questions))
-
-    scores = {"bleu_1": [], "bleu_2": [], "bleu_3": [], "bleu_4": []}
     weights = {
         "bleu_1": (1.0, 0, 0, 0),
         "bleu_2": (0.5, 0.5, 0, 0),
         "bleu_3": (1 / 3, 1 / 3, 1 / 3, 0),
         "bleu_4": (0.25, 0.25, 0.25, 0.25),
     }
+    scores = {k: [] for k in weights}
 
-    for index in range(total):
-        candidate = _normalize_tokens(generated_questions[index].get("question", ""))
-        reference = _normalize_tokens(ground_truth_questions[index].get("question", ""))
-
+    for gen_idx, truth_idx in pairs:
+        gen_question = generated[gen_idx].get("question", "")
+        truth_question = ground_truth[truth_idx].get("question", "")
+        candidate = _normalize_tokens(gen_question)
+        reference = _normalize_tokens(truth_question)
         if not candidate or not reference:
             for key in scores:
                 scores[key].append(0.0)
             continue
-
         for key, weight in weights.items():
             value = sentence_bleu([reference], candidate, weights=weight, smoothing_function=smoother)
             scores[key].append(float(value))
 
-    return {metric: round(sum(values) / len(values), 4) if values else 0.0 for metric, values in scores.items()}
+    return {metric: round(sum(vals) / len(vals), 4) if vals else 0.0 for metric, vals in scores.items()}
 
 
-def evaluate_cosine_similarity(
-    generated_questions: List[Dict],
-    ground_truth_questions: List[Dict],
+def evaluate_cosine_similarity_matched(
+    generated: List[Dict],
+    ground_truth: List[Dict],
+    pairs: List[tuple],
     embedding_model: Optional[SentenceTransformer] = None,
 ) -> float:
-    if not generated_questions or not ground_truth_questions:
+    """Среднее косинусное сходство между сопоставленными вопросами."""
+    if not pairs:
         return 0.0
 
-    if len(generated_questions) != len(ground_truth_questions):
-        LOGGER.warning("Generated and ground truth question counts differ; comparing by index on overlap.")
-
-    total = min(len(generated_questions), len(ground_truth_questions))
     model = embedding_model or SentenceTransformer(EMBEDDING_MODEL_NAME)
-
-    generated_texts = [generated_questions[index].get("question", "") for index in range(total)]
-    truth_texts = [ground_truth_questions[index].get("question", "") for index in range(total)]
-
-    generated_embeddings = model.encode(generated_texts)
-    truth_embeddings = model.encode(truth_texts)
-
     similarities = []
-    for index in range(total):
-        similarity = cosine_similarity(
-            generated_embeddings[index].reshape(1, -1),
-            truth_embeddings[index].reshape(1, -1),
-        )[0][0]
-        similarities.append(float(similarity))
-
+    for gen_idx, truth_idx in pairs:
+        gen_q = generated[gen_idx].get("question", "")
+        truth_q = ground_truth[truth_idx].get("question", "")
+        if not gen_q or not truth_q:
+            similarities.append(0.0)
+            continue
+        emb = model.encode([gen_q, truth_q])
+        sim = cosine_similarity([emb[0]], [emb[1]])[0][0]
+        similarities.append(float(sim))
     return round(sum(similarities) / len(similarities), 4) if similarities else 0.0
 
 
-def evaluate_answer_accuracy(generated_questions: List[Dict], ground_truth_questions: List[Dict]) -> float:
-    if not generated_questions or not ground_truth_questions:
+def evaluate_answer_accuracy_matched(
+    generated: List[Dict],
+    ground_truth: List[Dict],
+    pairs: List[tuple],
+) -> float:
+    """Доля пар, в которых буква правильного ответа совпадает."""
+    if not pairs:
         return 0.0
-
-    total = min(len(generated_questions), len(ground_truth_questions))
-    matches = 0
-
-    for index in range(total):
-        generated_correct = str(generated_questions[index].get("correct", "")).strip().upper()
-        ground_truth_correct = str(ground_truth_questions[index].get("correct", "")).strip().upper()
-        if generated_correct == ground_truth_correct:
-            matches += 1
-
-    return round(matches / total, 4) if total else 0.0
+    correct = 0
+    for gen_idx, truth_idx in pairs:
+        gen_correct = str(generated[gen_idx].get("correct", "")).strip().upper()
+        truth_correct = str(ground_truth[truth_idx].get("correct", "")).strip().upper()
+        if gen_correct == truth_correct:
+            correct += 1
+    return round(correct / len(pairs), 4)
 
 
 def run_full_evaluation(
@@ -116,21 +155,39 @@ def run_full_evaluation(
     gt_path: str,
     embedding_model: Optional[SentenceTransformer] = None,
 ) -> Dict[str, float]:
+    """Основная функция оценки с сопоставлением по семантике."""
     ground_truth = load_ground_truth(gt_path)
+    if not gen_questions or not ground_truth:
+        return {
+            "bleu_1": 0.0, "bleu_2": 0.0, "bleu_3": 0.0, "bleu_4": 0.0,
+            "cosine_similarity": 0.0, "answer_accuracy": 0.0,
+            "generated_count": len(gen_questions),
+            "ground_truth_count": len(ground_truth),
+            "matched_pairs": 0,
+        }
 
-    bleu_scores = evaluate_bleu(gen_questions, ground_truth)
-    cosine_score = evaluate_cosine_similarity(gen_questions, ground_truth, embedding_model=embedding_model)
-    answer_accuracy = evaluate_answer_accuracy(gen_questions, ground_truth)
+    # Загружаем эмбеддинг-модель, если не передали
+    if embedding_model is None:
+        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+    # Сопоставляем вопросы
+    pairs = _match_questions_by_similarity(gen_questions, ground_truth, embedding_model)
+
+    # Метрики по сопоставленным парам
+    bleu_scores = evaluate_bleu_matched(gen_questions, ground_truth, pairs)
+    cosine_score = evaluate_cosine_similarity_matched(gen_questions, ground_truth, pairs, embedding_model)
+    answer_acc = evaluate_answer_accuracy_matched(gen_questions, ground_truth, pairs)
 
     results = {
         **bleu_scores,
         "cosine_similarity": cosine_score,
-        "answer_accuracy": answer_accuracy,
+        "answer_accuracy": answer_acc,
         "generated_count": len(gen_questions),
         "ground_truth_count": len(ground_truth),
+        "matched_pairs": len(pairs),
     }
 
-    print("Evaluation metrics:")
+    print("Evaluation metrics (semantic matching):")
     for key, value in results.items():
         print(f"- {key}: {value}")
 
