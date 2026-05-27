@@ -45,14 +45,14 @@ class ModelManager:
         words = sentence.split()
         filtered = [w for w in words if w.lower() not in STOP_WORDS and len(w) > 2]
         if not filtered:
-            return " ".join(words[:4])
-        topic = " ".join(filtered[:4])
+            return " ".join(words[:3])
+        topic = " ".join(filtered[:3])
         if len(topic) > 70:
             topic = topic[:67] + "..."
         return topic
 
     @staticmethod
-    def _extract_answer_phrase(sentence: str, max_words: int = 20) -> str:
+    def _extract_answer_phrase(sentence: str, max_words: int = 999) -> str:
         """Извлекает короткую ответную фразу (первые max_words слов предложения)."""
         words = sentence.split()
         if len(words) <= max_words:
@@ -89,8 +89,8 @@ class ModelManager:
         short_phrases = []
         for s in sentences:
             words = s.split()
-            if len(words) > 8:
-                short = " ".join(words[:8])
+            if len(words) > 12:
+                short = " ".join(words[:12])
             else:
                 short = s
             short_phrases.append(short)
