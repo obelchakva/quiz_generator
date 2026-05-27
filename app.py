@@ -21,7 +21,6 @@ LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEST_DATA_DIR = PROJECT_ROOT / "test_data"
 SAMPLE_PATH = TEST_DATA_DIR / "sample.txt"
-GROUND_TRUTH_PATH = TEST_DATA_DIR / "ground_truth.json"
 
 
 @st.cache_resource
@@ -156,7 +155,7 @@ def main() -> None:
     save_questions_to_json(questions, str(save_dir / "generated_questions.json"))
     save_questions_to_csv(questions, str(save_dir / "generated_questions.csv"))
 
-    if SAMPLE_PATH.exists() and GROUND_TRUTH_PATH.exists():
+    if SAMPLE_PATH.exists():
         if st.button("Оценить качество"):
             try:
                 model_manager = get_model_manager(selected_model)
@@ -177,7 +176,7 @@ def main() -> None:
 
                 metrics = run_full_evaluation(
                     gen_questions=eval_questions,
-                    gt_path=str(GROUND_TRUTH_PATH),
+                    questions_per_chunk=questions_per_chunk,
                     embedding_model=embedding_model,
                 )
                 st.subheader("Результаты оценки")

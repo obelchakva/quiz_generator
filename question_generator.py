@@ -83,7 +83,7 @@ def generate_questions_for_text(
     total_chunks = len(chunks)
     for index, chunk in enumerate(chunks):
         generated = model_manager.generate_questions(chunk, num_questions=questions_per_chunk)
-        chunk_message = f"Чанк {index + 1}/{total_chunks}: получено {len(generated)} вопрос(ов)."
+        chunk_message = f"Чанк {index + 1}/{total_chunks}: получено {len(generated)} вопрос(а)."
         LOGGER.info(chunk_message)
 
         if info_callback is not None:

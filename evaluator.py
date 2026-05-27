@@ -13,6 +13,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 LOGGER = logging.getLogger(__name__)
 EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+# Путь к папке с ground truth
+GT_DIR = "test_data"
 
 def _ensure_nltk_resources() -> None:
     resources = ["punkt", "punkt_tab"]
@@ -22,32 +24,35 @@ def _ensure_nltk_resources() -> None:
         except LookupError:
             nltk.download(resource, quiet=True)
 
+def get_ground_truth_path(questions_per_chunk: int) -> str:
+    """Возвращает путь к файлу ground truth в зависимости от количества вопросов на чанк."""
+    if questions_per_chunk == 1:
+        return f"{GT_DIR}/ground_truth_3.json"
+    elif questions_per_chunk == 2:
+        return f"{GT_DIR}/ground_truth_6.json"
+    elif questions_per_chunk == 3:
+        return f"{GT_DIR}/ground_truth_9.json"
+    else:
+        # fallback
+        return f"{GT_DIR}/ground_truth_7.json"
 
 def load_ground_truth(json_path: str) -> List[Dict]:
     with open(json_path, "r", encoding="utf-8") as file:
         return json.load(file)
-
 
 def _normalize_tokens(text: str) -> List[str]:
     _ensure_nltk_resources()
     tokens = word_tokenize(text.lower(), language="russian")
     return [token for token in tokens if re.match(r"\w+", token)]
 
-
 def _match_questions_by_similarity(
     generated: List[Dict],
     ground_truth: List[Dict],
     embedding_model: SentenceTransformer,
 ) -> List[tuple]:
-    """
-    Жадное сопоставление: для каждого сгенерированного вопроса выбираем
-    самый похожий эталонный, который ещё не был использован.
-    Возвращает список пар (gen_idx, truth_idx).
-    """
     if not generated or not ground_truth:
         return []
 
-    # Эмбеддинги вопросов
     gen_texts = [item.get("question", "") for item in generated]
     truth_texts = [item.get("question", "") for item in ground_truth]
     gen_emb = embedding_model.encode(gen_texts)
@@ -58,7 +63,6 @@ def _match_questions_by_similarity(
     used_truth = set()
     pairs = []
 
-    # Жадное присваивание: для каждого generated берём лучший ещё не использованный truth
     for gen_idx in range(len(generated)):
         best_sim = -1
         best_truth_idx = -1
@@ -74,13 +78,11 @@ def _match_questions_by_similarity(
             used_truth.add(best_truth_idx)
     return pairs
 
-
 def evaluate_bleu_matched(
     generated: List[Dict],
     ground_truth: List[Dict],
     pairs: List[tuple],
 ) -> Dict[str, float]:
-    """Вычисляет BLEU только для сопоставленных пар."""
     if not pairs:
         return {"bleu_1": 0.0, "bleu_2": 0.0, "bleu_3": 0.0, "bleu_4": 0.0}
 
@@ -108,14 +110,12 @@ def evaluate_bleu_matched(
 
     return {metric: round(sum(vals) / len(vals), 4) if vals else 0.0 for metric, vals in scores.items()}
 
-
 def evaluate_cosine_similarity_matched(
     generated: List[Dict],
     ground_truth: List[Dict],
     pairs: List[tuple],
     embedding_model: Optional[SentenceTransformer] = None,
 ) -> float:
-    """Среднее косинусное сходство между сопоставленными вопросами."""
     if not pairs:
         return 0.0
 
@@ -132,13 +132,11 @@ def evaluate_cosine_similarity_matched(
         similarities.append(float(sim))
     return round(sum(similarities) / len(similarities), 4) if similarities else 0.0
 
-
 def evaluate_answer_accuracy_matched(
     generated: List[Dict],
     ground_truth: List[Dict],
     pairs: List[tuple],
 ) -> float:
-    """Доля пар, в которых буква правильного ответа совпадает."""
     if not pairs:
         return 0.0
     correct = 0
@@ -149,13 +147,13 @@ def evaluate_answer_accuracy_matched(
             correct += 1
     return round(correct / len(pairs), 4)
 
-
 def run_full_evaluation(
     gen_questions: List[Dict],
-    gt_path: str,
+    questions_per_chunk: int = 2,
     embedding_model: Optional[SentenceTransformer] = None,
 ) -> Dict[str, float]:
-    """Основная функция оценки с сопоставлением по семантике."""
+    """Основная функция оценки с учётом количества вопросов на чанк."""
+    gt_path = get_ground_truth_path(questions_per_chunk)
     ground_truth = load_ground_truth(gt_path)
     if not gen_questions or not ground_truth:
         return {
@@ -166,14 +164,11 @@ def run_full_evaluation(
             "matched_pairs": 0,
         }
 
-    # Загружаем эмбеддинг-модель, если не передали
     if embedding_model is None:
         embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
-    # Сопоставляем вопросы
     pairs = _match_questions_by_similarity(gen_questions, ground_truth, embedding_model)
 
-    # Метрики по сопоставленным парам
     bleu_scores = evaluate_bleu_matched(gen_questions, ground_truth, pairs)
     cosine_score = evaluate_cosine_similarity_matched(gen_questions, ground_truth, pairs, embedding_model)
     answer_acc = evaluate_answer_accuracy_matched(gen_questions, ground_truth, pairs)
@@ -187,7 +182,7 @@ def run_full_evaluation(
         "matched_pairs": len(pairs),
     }
 
-    print("Evaluation metrics (semantic matching):")
+    print(f"Evaluation metrics for {questions_per_chunk} question(s) per chunk (semantic matching):")
     for key, value in results.items():
         print(f"- {key}: {value}")
 
