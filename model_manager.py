@@ -288,5 +288,5 @@ class ModelManager:
             return llm_questions
 
         # Fallback
-        LOGGER.warning("LLM не удалась, используем семантический fallback для чанка")
+        LOGGER.warning("LLM не удалась, используем семантический fallback для фрагмента")
         return self._semantic_fallback(chunk_text, num_questions)
